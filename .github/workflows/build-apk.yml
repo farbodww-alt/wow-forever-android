@@ -1,0 +1,112 @@
+name: Build WoW Classic APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Patch source code
+        run: |
+          python3 -c '
+          import os
+
+          for root, dirs, files in os.walk("."):
+              if ".git" in root:
+                  continue
+              for file in files:
+                  filepath = os.path.join(root, file)
+                  try:
+                      with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                          content = f.read()
+                      
+                      new_content = content
+                      # 1. Identity & Folders
+                      new_content = new_content.replace("app.wowforever", "app.wowclassic")
+                      new_content = new_content.replace("WoW Forever", "WoW Classic")
+                      new_content = new_content.replace("/storage/emulated/0/WoW Forever", "/storage/emulated/0/WoW Classic")
+                      new_content = new_content.replace("storage/emulated/0/WoW Forever", "storage/emulated/0/WoW Classic")
+                      
+                      # 2. MoP Classic Product & Executables
+                      new_content = new_content.replace("wow_classic_beta", "wow_classic")
+                      new_content = new_content.replace("_classic_beta_", "_classic_")
+                      new_content = new_content.replace("WowB-ARM64.exe", "WowClassic-arm64.exe")
+                      new_content = new_content.replace("WowB-arm64.exe", "WowClassic-arm64.exe")
+                      new_content = new_content.replace("WowB.exe", "WowClassic.exe")
+                      
+                      # 3. Touch controls / Virtual Overlay enabled by default
+                      new_content = new_content.replace("enableTouchControls = false", "enableTouchControls = true")
+                      new_content = new_content.replace("touchControlsEnabled = false", "touchControlsEnabled = true")
+                      new_content = new_content.replace("showTouchControls = false", "showTouchControls = true")
+                      new_content = new_content.replace("virtualControlsEnabled = false", "virtualControlsEnabled = true")
+                      
+                      # 4. Samsung S26 Ultra / Adreno 840 / Turnip v32 / UBWC & debug vars
+                      new_content = new_content.replace("FD_DEV_FEATURES=enable_tp_ubwc=1", "FD_DEV_FEATURES=enable_tp_ubwc=0")
+                      
+                      if new_content != content:
+                          with open(filepath, "w", encoding="utf-8") as f:
+                              f.write(new_content)
+                  except Exception:
+                      pass
+
+          # Ensure Config.wtf defaults and environment vars in source files
+          for root, dirs, files in os.walk("app/src"):
+              for file in files:
+                  if file.endswith((".kt", ".java")):
+                      filepath = os.path.join(root, file)
+                      with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                          c = f.read()
+                      
+                      # Add default WTF settings if missing or update existing
+                      c = c.replace("SET GamePadEnable \"1\"", "SET GamePadEnable \"0\"")
+                      
+                      with open(filepath, "w", encoding="utf-8") as f:
+                          f.write(c)
+          '
+
+      - name: Fetch components
+        run: |
+          chmod +x tools/fetch_components.sh
+          ./tools/fetch_components.sh
+
+      - name: Build Modern Release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleModernRelease --no-daemon
+
+      - name: Prepare Release File
+        run: |
+          cp app/build/outputs/apk/modern/release/app-modern-release.apk WoW-Classic-MoP-S26Ultra.apk
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Classic-MoP-S26Ultra
+          path: WoW-Classic-MoP-S26Ultra.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-mop-s26ultra
+          name: "WoW Classic Mists of Pandaria S26 Ultra"
+          body: "Release build of WoW Classic Mists of Pandaria for Samsung Galaxy S26 Ultra."
+          files: WoW-Classic-MoP-S26Ultra.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
