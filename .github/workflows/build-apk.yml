@@ -1,4 +1,4 @@
-name: Build WoW Classic Era APK
+name: Build WoW Classic MoP APK
 
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.3.13750724" "platforms;android-36"
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Retarget the app to WoW Classic Era
+      - name: Retarget the app to WoW Classic (Mists of Pandaria)
         run: |
           python3 - <<'PY'
           import pathlib, sys
@@ -49,10 +49,10 @@ jobs:
           DL = J + "ui/screen/wow/WowClientDownloader.kt"
           SC = J + "ui/screen/wow/WoWForeverScreen.kt"
 
-          # Game identity: Classic Era product, client folder and Windows ARM64 executable
-          sub(DL, 'const val FLAVOR_DIR = "_classic_beta_"', 'const val FLAVOR_DIR = "_classic_era_"')
+          # Game identity: Classic (MoP) product, client folder and Windows ARM64 executable
+          sub(DL, 'const val FLAVOR_DIR = "_classic_beta_"', 'const val FLAVOR_DIR = "_classic_"')
           sub(DL, 'const val EXE_NAME = "WowB-ARM64.exe"', 'const val EXE_NAME = "WowClassic-arm64.exe"')
-          sub(DL, 'const val TARGET_PRODUCT = "wow_classic_beta"', 'const val TARGET_PRODUCT = "wow_classic_era"')
+          sub(DL, 'const val TARGET_PRODUCT = "wow_classic_beta"', 'const val TARGET_PRODUCT = "wow_classic"')
 
           # Live realms instead of the beta "test" portal; no gamepad on a phone
           sub(SC, '"portal" to "\\"test\\""', '"portal" to "\\"us\\""')
@@ -65,7 +65,7 @@ jobs:
                   'File(picked, "WoW Classic"), File(picked, "World of Warcraft"), File(picked, "World of Warcraft Classic Era"), File(picked, "World of Warcraft Classic")')
 
           # Visible names
-          sub(SC, 'WoW Forever requires World of Warcraft Classic Beta (', 'WoW Classic requires World of Warcraft Classic Era (')
+          sub(SC, 'WoW Forever requires World of Warcraft Classic Beta (', 'WoW Classic requires World of Warcraft Classic Mists of Pandaria (')
           sub(SC, 'Error launching WoW Forever', 'Error launching WoW Classic')
           sub(SC, "for WoW Forever to read", "for WoW Classic to read")
           sub(SC, "install apps from WoW Forever.", "install apps from WoW Classic.")
@@ -105,8 +105,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0-classic-era-build${{ github.run_number }}
-          name: "WoW Classic Era build ${{ github.run_number }}"
-          body: "WoW Classic Era (wow_classic_era) for Snapdragon 8 Elite devices such as the Galaxy S26 Ultra."
+          name: "WoW Classic MoP build ${{ github.run_number }}"
+          body: "WoW Classic Mists of Pandaria (wow_classic) for Snapdragon 8 Elite devices such as the Galaxy S26 Ultra."
           files: WoW-Classic-Era.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
