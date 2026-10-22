@@ -1,6 +1,5 @@
 name: Build WoW Classic APK
 
-on:name: Build WoW Classic APK
 
 on:
   push:
