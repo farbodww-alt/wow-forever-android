@@ -1,3 +1,115 @@
+name: Build WoW Classic Era APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.3.13750724" "platforms;android-36"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Retarget the app to WoW Classic Era
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          def sub(path, old, new):
+              p = pathlib.Path(path)
+              s = p.read_text(encoding="utf-8")
+              n = s.count(old)
+              if n != 1:
+                  sys.exit(f"PATCH FAILED: {path}: expected exactly 1 match, found {n}: {old!r}")
+              p.write_text(s.replace(old, new), encoding="utf-8")
+
+          J = "app/src/main/java/app/gamenative/"
+          DL = J + "ui/screen/wow/WowClientDownloader.kt"
+          SC = J + "ui/screen/wow/WoWForeverScreen.kt"
+
+          # Game identity: Classic Era product, client folder and Windows ARM64 executable
+          sub(DL, 'const val FLAVOR_DIR = "_classic_beta_"', 'const val FLAVOR_DIR = "_classic_era_"')
+          sub(DL, 'const val EXE_NAME = "WowB-ARM64.exe"', 'const val EXE_NAME = "WowClassic-arm64.exe"')
+          sub(DL, 'const val TARGET_PRODUCT = "wow_classic_beta"', 'const val TARGET_PRODUCT = "wow_classic_era"')
+
+          # Live realms instead of the beta "test" portal; no gamepad on a phone
+          sub(SC, '"portal" to "\\"test\\""', '"portal" to "\\"us\\""')
+          sub(SC, '"GamePadEnable" to "\\"1\\""', '"GamePadEnable" to "\\"0\\""')
+
+          # Default game folder and folder auto-detection
+          sub(SC, 'File(Environment.getExternalStorageDirectory(), "WoW Forever")',
+                  'File(Environment.getExternalStorageDirectory(), "WoW Classic")')
+          sub(SC, 'File(picked, "WoW Forever"), File(picked, "World of Warcraft")',
+                  'File(picked, "WoW Classic"), File(picked, "World of Warcraft"), File(picked, "World of Warcraft Classic Era"), File(picked, "World of Warcraft Classic")')
+
+          # Visible names
+          sub(SC, 'WoW Forever requires World of Warcraft Classic Beta (', 'WoW Classic requires World of Warcraft Classic Era (')
+          sub(SC, 'Error launching WoW Forever', 'Error launching WoW Classic')
+          sub(SC, "for WoW Forever to read", "for WoW Classic to read")
+          sub(SC, "install apps from WoW Forever.", "install apps from WoW Classic.")
+          sub(SC, 'put("name", "WoW Forever")', 'put("name", "WoW Classic")')
+          sub("app/src/main/res/values/strings.xml", '<string name="app_name">WoW Forever</string>', '<string name="app_name">WoW Classic</string>')
+
+          # In-app updater must look at this fork, never the upstream WoW Forever releases
+          sub(J + "utils/AppUpdater.kt", "repos/jaredgei/wow-forever-android/releases/latest", "repos/farbodww-alt/wow-forever-android/releases/latest")
+          print("all patches applied")
+          PY
+          git diff --stat
+
+      - name: Fetch components
+        run: |
+          chmod +x tools/fetch_components.sh
+          ./tools/fetch_components.sh
+
+      - name: Build Modern Release APK
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleModernRelease --no-daemon --stacktrace
+
+      - name: Prepare APK
+        run: |
+          cp app/build/outputs/apk/modern/release/app-modern-release.apk WoW-Classic-Era.apk
+          ls -l WoW-Classic-Era.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Classic-Era-APK
+          path: WoW-Classic-Era.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0-classic-era-build${{ github.run_number }}
+          name: "WoW Classic Era build ${{ github.run_number }}"
+          body: "WoW Classic Era (wow_classic_era) for Snapdragon 8 Elite devices such as the Galaxy S26 Ultra."
+          files: WoW-Classic-Era.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 name: Build WoW Classic APK
 
 
