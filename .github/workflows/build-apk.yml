@@ -75,7 +75,9 @@ jobs:
           # In-app updater must look at this fork, never the upstream WoW Forever releases
           sub(J + "utils/AppUpdater.kt", "repos/jaredgei/wow-forever-android/releases/latest", "repos/farbodww-alt/wow-forever-android/releases/latest")
           # New versionCode so existing installs also pick up the bundled controller profile
-          sub("app/build.gradle.kts", "versionCode = 226", "versionCode = 227")
+          sub("app/build.gradle.kts", "versionCode = 226", "versionCode = 228")
+          # Fixed 16:9 container (no phone-aspect stretching) so 1280x720 is selectable in-game
+          sub(SC, "return fitScreenSize(baseSize, windowWidth, windowHeight)", "return baseSize")
           print("all patches applied")
           PY
           git diff --stat
