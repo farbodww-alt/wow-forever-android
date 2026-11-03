@@ -1,0 +1,134 @@
+name: Build WoW Retail APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "retail" ]
+    paths:
+      - ".github/workflows/build-retail.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.3.13750724" "platforms;android-36"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Retarget the app to WoW Retail
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          def subn(path, old, new, count):
+              p = pathlib.Path(path)
+              s = p.read_text(encoding="utf-8")
+              n = s.count(old)
+              if n != count:
+                  sys.exit(f"PATCH FAILED: {path}: expected {count} match(es), found {n}: {old!r}")
+              p.write_text(s.replace(old, new), encoding="utf-8")
+
+          def sub(path, old, new):
+              subn(path, old, new, 1)
+
+          J = "app/src/main/java/app/gamenative/"
+          DL = J + "ui/screen/wow/WowClientDownloader.kt"
+          SC = J + "ui/screen/wow/WoWForeverScreen.kt"
+
+          # Game identity: retail product, client folder and Windows ARM64 executable
+          sub(DL, 'const val FLAVOR_DIR = "_classic_beta_"', 'const val FLAVOR_DIR = "_retail_"')
+          sub(DL, 'const val EXE_NAME = "WowB-ARM64.exe"', 'const val EXE_NAME = "Wow-ARM64.exe"')
+          sub(DL, 'const val TARGET_PRODUCT = "wow_classic_beta"', 'const val TARGET_PRODUCT = "wow"')
+
+          # Live realms instead of the beta "test" portal; no gamepad on a phone
+          sub(SC, '"portal" to "\\"test\\""', '"portal" to "\\"us\\""')
+          sub(SC, '"GamePadEnable" to "\\"1\\""', '"GamePadEnable" to "\\"0\\""')
+
+          # Default game folder and folder auto-detection
+          sub(SC, 'File(Environment.getExternalStorageDirectory(), "WoW Forever")',
+                  'File(Environment.getExternalStorageDirectory(), "WoW Retail")')
+          sub(SC, 'File(picked, "WoW Forever"), File(picked, "World of Warcraft")',
+                  'File(picked, "WoW Retail"), File(picked, "World of Warcraft"), File(picked, "World of Warcraft Retail")')
+
+          # Visible names
+          sub(SC, 'WoW Forever requires World of Warcraft Classic Beta (', 'WoW Retail requires World of Warcraft Retail (')
+          sub(SC, 'Error launching WoW Forever', 'Error launching WoW Retail')
+          sub(SC, "for WoW Forever to read", "for WoW Retail to read")
+          sub(SC, "install apps from WoW Forever.", "install apps from WoW Retail.")
+          sub(SC, 'put("name", "WoW Forever")', 'put("name", "WoW Retail")')
+          sub("app/src/main/res/values/strings.xml", '<string name="app_name">WoW Forever</string>', '<string name="app_name">WoW Retail</string>')
+
+          # Separate app: new package id (same length as the old one) so it installs next to WoW Classic
+          subn("app/build.gradle.kts", "app.wowforever", "app.wow.retail", 1)
+          subn("app/src/main/java/com/winlator/container/Container.java", "app.wowforever", "app.wow.retail", 7)
+          subn("app/src/main/java/com/winlator/core/WineUtils.java", "app.wowforever", "app.wow.retail", 2)
+          subn(SC, "app.wowforever", "app.wow.retail", 1)
+
+          # In-app updater must look at this fork, never the upstream WoW Forever releases
+          sub(J + "utils/AppUpdater.kt", "repos/jaredgei/wow-forever-android/releases/latest", "repos/farbodww-alt/wow-forever-android/releases/latest")
+
+          # New versionCode so existing installs also pick up the bundled controller profile
+          sub("app/build.gradle.kts", "versionCode = 226", "versionCode = 228")
+          # Fixed 16:9 container (no phone-aspect stretching) so 1280x720 is selectable in-game
+          sub(SC, "return fitScreenSize(baseSize, windowWidth, windowHeight)", "return baseSize")
+          print("all patches applied")
+          PY
+          git diff --stat
+
+      - name: Bundle WoW controller profile
+        run: |
+          mkdir -p app/src/main/assets/inputcontrols/profiles
+          echo "eyJpZCI6NiwibmFtZSI6IldvVyBDb25maWciLCJjdXJzb3JTcGVlZCI6MSwiZWxlbWVudHMiOlt7InR5cGUiOiJEX1BBRCIsInNoYXBlIjoiQ0lSQ0xFIiwiYmluZGluZ3MiOlsiS0VZX1ciLCJLRVlfRCIsIktFWV9TIiwiS0VZX0EiXSwic2NhbGUiOjEuMTUsIngiOjAuMDk5MDA5OTAxMjg1MTcxNTEsInkiOjAuODA0MzQ3ODEzMTI5NDI1LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV8wIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjc4MjE3ODIyMzEzMzA4NzIsInkiOjAuOTU2NTIxNzQ5NDk2NDYsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiLigI4iLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZXzMiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjAuOTUsIngiOjAuODgwMzI3MTY1MTI2ODAwNSwieSI6MC42MzA0MzQ4MTExMTUyNjQ5LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0Ijoi4oCOIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV80IiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjc4MjE3ODIyMzEzMzA4NzIsInkiOjAuNzM5MTMwNDM3Mzc0MTE1LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0Ijoi4oCOIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV81IiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjgzMTI1MjY5NDEyOTk0MzgsInkiOjAuNzM5MTMwNDM3Mzc0MTE1LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0Ijoi4oCOIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV8xIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjc4MjE3ODIyMzEzMzA4NzIsInkiOjAuNjMwNDM0ODExMTE1MjY0OSwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IuKAjiIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJLRVlfMiIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MC45NSwieCI6MC44MzEyNTI2OTQxMjk5NDM4LCJ5IjowLjYzMDQzNDgxMTExNTI2NDksInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiLigI4iLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZXzgiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjAuOTUsIngiOjAuODMxMjUyNjk0MTI5OTQzOCwieSI6MC44NDY4ODA5MTI3ODA3NjE3LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0Ijoi4oCOIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV85IiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjg4MDMyNzE2NTEyNjgwMDUsInkiOjAuODQ2ODgwOTEyNzgwNzYxNywidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IuKAjiIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJLRVlfNiIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MC45NSwieCI6MC44ODAzMjcxNjUxMjY4MDA1LCJ5IjowLjczOTEzMDQzNzM3NDExNSwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IuKAjiIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJLRVlfNyIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MC45NSwieCI6MC43ODIxNzgyMjMxMzMwODcyLCJ5IjowLjg0Njg4MDkxMjc4MDc2MTcsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiLigI4iLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZX01JTlVTIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjk1LCJ4IjowLjgzMTI1MjY5NDEyOTk0MzgsInkiOjAuOTU2NTIxNzQ5NDk2NDYsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiLigI4iLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiUkVDVCIsImJpbmRpbmdzIjpbIktFWV9CIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjg1LCJ4IjowLjk2MDM5NjA1MTQwNjg2MDQsInkiOjAuNTIwNzkzOTc0Mzk5NTY2NywidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IkJhZ3MiLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZX0JBQ0tTTEFTSCIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MS4zNSwieCI6MC4xNzgyMTc4MjgyNzM3NzMyLCJ5IjowLjU2NDI3MjIyNDkwMzEwNjcsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiJBdXRvIFJ1biIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJST1VORF9SRUNUIiwiYmluZGluZ3MiOlsiTU9VU0VfUklHSFRfQlVUVE9OIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjoxLjA1LCJ4IjowLjgzMTI1MjY5NDEyOTk0MzgsInkiOjAuNSwidG9nZ2xlU3dpdGNoIjp0cnVlLCJ0ZXh0IjoiVCBSQyIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJSRUNUIiwiYmluZGluZ3MiOlsiS0VZX1RBQiIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MS4xNSwieCI6MC4wNzgzNDY5Njc2OTcxNDM1NSwieSI6MC41NDI1MzMwOTk2NTEzMzY3LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV9TUEFDRSIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MS4zNSwieCI6MC4yNTc0MjU3NTUyNjIzNzQ5LCJ5IjowLjYzMDQzNDgxMTExNTI2NDksInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiJKVU1QIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV9FU0MiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEsIngiOjAuMDU5NDA1OTQxNTE2MTYwOTY1LCJ5IjowLjA2NTIxNzM5MDY1NjQ3MTI1LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV9CUkFDS0VUX0xFRlQiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEsIngiOjAuODgwMzI3MTY1MTI2ODAwNSwieSI6MC45NTY1MjE3NDk0OTY0NiwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IuKAjiIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJSRUNUIiwiYmluZGluZ3MiOlsiS0VZX0wiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjAuODUsIngiOjAuOTYwMzk2MDUxNDA2ODYwNCwieSI6MC4xNzM5MTMwNDY3MTc2NDM3NCwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IlF1ZXN0cyIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJSRUNUIiwiYmluZGluZ3MiOlsiS0VZX08iLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjAuODUsIngiOjAuOTYwMzk2MDUxNDA2ODYwNCwieSI6MC4yNjA4Njk1NjI2MjU4ODUsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiJTb2NpYWwiLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiUkVDVCIsImJpbmRpbmdzIjpbIktFWV9OIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjowLjg1LCJ4IjowLjk2MDM5NjA1MTQwNjg2MDQsInkiOjAuMzQ3ODI2MDkzNDM1Mjg3NSwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IlRhbGVudHMiLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZX1NISUZUX0wiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEsIngiOjAuMjA2NjI5MzY1NjgyNjAxOTMsInkiOjAuOTM0NzgyNjI0MjQ0Njg5OSwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IlNoaWZ0IiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlNRVUFSRSIsImJpbmRpbmdzIjpbIktFWV9DVFJMX0wiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEsIngiOjAuMjE2OTYwODMyNDc2NjE1OSwieSI6MC43ODE2NjM1MzcwMjU0NTE3LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiQ1RSTCIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJLRVlfQUxUX0wiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEsIngiOjAuMjc3MjI3NzI5NTU4OTQ0NywieSI6MC45MzQ3ODI2MjQyNDQ2ODk5LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiQUxUIiwiaWNvbklkIjowfSx7InR5cGUiOiJCVVRUT04iLCJzaGFwZSI6IlJFQ1QiLCJiaW5kaW5ncyI6WyJLRVlfQyIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MC44NSwieCI6MC45NjAzOTYwNTE0MDY4NjA0LCJ5IjowLjQzMzgzNzQ0MzU5MDE2NDIsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiJDaGFyYWN0ciIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJSRUNUIiwiYmluZGluZ3MiOlsiS0VZX1AiLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjAuODUsIngiOjAuOTYwMzk2MDUxNDA2ODYwNCwieSI6MC4wODY5NTY1MjMzNTg4MjE4NywidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IlNwZWxscyIsImljb25JZCI6MH0seyJ0eXBlIjoiVFJBQ0tQQUQiLCJzaGFwZSI6IkNJUkNMRSIsImJpbmRpbmdzIjpbIk1PVVNFX1NDUk9MTF9VUCIsIk5PTkUiLCJNT1VTRV9TQ1JPTExfRE9XTiIsIk5PTkUiXSwic2NhbGUiOjAuNSwieCI6MC4wNTk0MDU5NDE1MTYxNjA5NjUsInkiOjAuMjQyOTExMTU5OTkyMjE4MDIsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiIiLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiUk9VTkRfUkVDVCIsImJpbmRpbmdzIjpbIk1PVVNFX1JJR0hUX0JVVFRPTiIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MS4xNSwieCI6MC4wNzgzNDY5Njc2OTcxNDM1NSwieSI6MC40MDczNzI0MTUwNjU3NjU0LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiSW50ZXJhY3QiLCJpY29uSWQiOjB9LHsidHlwZSI6IlRSQUNLUEFEIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJLRVlfTSIsIktFWV9NIiwiS0VZX00iLCJLRVlfTSJdLCJzY2FsZSI6MC44LCJ4IjowLjg2ODI3Mzc5NDY1MTAzMTUsInkiOjAuMTA1ODYwMTE0MDk3NTk1MjEsInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiIiLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiU1FVQVJFIiwiYmluZGluZ3MiOlsiS0VZX0tQX0FERCIsIk5PTkUiLCJOT05FIiwiTk9ORSJdLCJzY2FsZSI6MS4yNSwieCI6MC45NTA0OTUwNjQyNTg1NzU0LCJ5IjowLjkxMzA0MzQ5ODk5MjkxOTksInRvZ2dsZVN3aXRjaCI6ZmFsc2UsInRleHQiOiJTV0lUQ0giLCJpY29uSWQiOjB9LHsidHlwZSI6IkJVVFRPTiIsInNoYXBlIjoiUkVDVCIsImJpbmRpbmdzIjpbIktFWV9TSElGVF9MIiwiTk9ORSIsIk5PTkUiLCJOT05FIl0sInNjYWxlIjoxLCJ4IjowLjk1MDQ5NTA2NDI1ODU3NTQsInkiOjAuNjk1NjUyMTg2ODcwNTc1LCJ0b2dnbGVTd2l0Y2giOnRydWUsInRleHQiOiIiLCJpY29uSWQiOjB9LHsidHlwZSI6IlRSQUNLUEFEIiwic2hhcGUiOiJDSVJDTEUiLCJiaW5kaW5ncyI6WyJNT1VTRV9NT1ZFX1VQIiwiTU9VU0VfTU9WRV9SSUdIVCIsIk1PVVNFX01PVkVfRE9XTiIsIk1PVVNFX01PVkVfTEVGVCJdLCJzY2FsZSI6MC41LCJ4IjowLjcyMjc3MjMwMDI0MzM3NzcsInkiOjAuNjUyMTczOTM2MzY3MDM0OSwidG9nZ2xlU3dpdGNoIjpmYWxzZSwidGV4dCI6IiIsImljb25JZCI6MH0seyJ0eXBlIjoiQlVUVE9OIiwic2hhcGUiOiJTUVVBUkUiLCJiaW5kaW5ncyI6WyJNT1VTRV9SSUdIVF9CVVRUT04iLCJOT05FIiwiTk9ORSIsIk5PTkUiXSwic2NhbGUiOjEuMjUsIngiOjAuNzIyNzcyMzAwMjQzMzc3NywieSI6MC42NTIxNzM5MzYzNjcwMzQ5LCJ0b2dnbGVTd2l0Y2giOmZhbHNlLCJ0ZXh0IjoiIiwiaWNvbklkIjowfV19" | base64 -d > app/src/main/assets/inputcontrols/profiles/controls-6.icp
+          python3 -c "import json; j = json.load(open('app/src/main/assets/inputcontrols/profiles/controls-6.icp', encoding='utf-8-sig')); assert j['name'] == 'WoW Config' and j['id'] == 6; print('profile ok', len(j['elements']), 'elements')"
+
+      - name: Fetch components
+        run: |
+          chmod +x tools/fetch_components.sh
+          ./tools/fetch_components.sh
+
+      - name: Build Modern Release APK
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleModernRelease --no-daemon --stacktrace
+
+      - name: Prepare APK
+        run: |
+          cp app/build/outputs/apk/modern/release/app-modern-release.apk WoW-Retail.apk
+          ls -l WoW-Retail.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Retail-APK
+          path: WoW-Retail.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: retail-build${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          name: "WoW Retail build ${{ github.run_number }}"
+          body: "WoW Retail (wow) for Snapdragon 8 Elite devices such as the Galaxy S26 Ultra."
+          files: WoW-Retail.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
