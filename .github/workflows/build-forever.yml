@@ -35,7 +35,7 @@ jobs:
       - name: Apply WoW Forever tweaks
         run: |
           python3 - <<'PY'
-          import pathlib, re, sys
+          import os, pathlib, re, sys
 
           def sub(path, old, new):
               p = pathlib.Path(path)
@@ -64,7 +64,25 @@ jobs:
           if len(found) != 1:
               sys.exit(f"PATCH FAILED: expected one versionCode, found {found}")
           g.write_text(re.sub(r"versionCode = (\d+)", lambda m: f"versionCode = {int(m.group(1)) + 1}", s), encoding="utf-8")
-          print("all patches applied")
+          # App name: "WoW Forever FS-<versionName>"
+          version = re.search(r'versionName\s*=\s*"([^"]+)"', pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8")).group(1)
+          sub("app/src/main/res/values/strings.xml", '<string name="app_name">WoW Forever</string>', f'<string name="app_name">WoW Forever FS-{version}</string>')
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"APP_VERSION={version}\n")
+
+          # Separate app: new package id (same length as the old one) so it installs next to the other builds
+          def subn(path, old, new, count):
+              p = pathlib.Path(path)
+              t = p.read_text(encoding="utf-8")
+              n = t.count(old)
+              if n != count:
+                  sys.exit(f"PATCH FAILED: {path}: expected {count} match(es), found {n}: {old!r}")
+              p.write_text(t.replace(old, new), encoding="utf-8")
+          subn("app/build.gradle.kts", "app.wowforever", "app.forever.fs", 1)
+          subn("app/src/main/java/com/winlator/container/Container.java", "app.wowforever", "app.forever.fs", 7)
+          subn("app/src/main/java/com/winlator/core/WineUtils.java", "app.wowforever", "app.forever.fs", 2)
+          subn(SC, "app.wowforever", "app.forever.fs", 1)
+          print("all patches applied, version", version)
           PY
           git diff --stat
 
@@ -89,14 +107,14 @@ jobs:
 
       - name: Prepare APK
         run: |
-          cp app/build/outputs/apk/modern/release/app-modern-release.apk WoW-Forever.apk
-          ls -l WoW-Forever.apk
+          cp app/build/outputs/apk/modern/release/app-modern-release.apk "WoW-Forever-FS-${APP_VERSION}.apk"
+          ls -l WoW-Forever-FS-*.apk
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: WoW-Forever-APK
-          path: WoW-Forever.apk
+          path: WoW-Forever-FS-*.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -104,8 +122,8 @@ jobs:
           tag_name: forever-build${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
-          name: "WoW Forever build ${{ github.run_number }}"
+          name: "WoW Forever FS-${{ env.APP_VERSION }} build ${{ github.run_number }}"
           body: "WoW Forever (wowf) with the WoW Config controller profile bundled."
-          files: WoW-Forever.apk
+          files: WoW-Forever-FS-*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
